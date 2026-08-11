@@ -12,3 +12,9 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.2",
 ]
+
+# DAGs run under /home/vb1301/airflow/venv, which is Python 3.10 — pin ruff
+# to that target so it never suggests syntax (e.g. datetime.UTC, 3.11+) that
+# breaks at DAG-parse time even though the dev/CI venv here is newer.
+[tool.ruff]
+target-version = "py310"

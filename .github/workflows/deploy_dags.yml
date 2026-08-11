@@ -21,11 +21,15 @@ jobs:
       - name: Lint
         run: uv run ruff check dags/
 
-      - name: Validate DAG syntax
-        run: uv run python -m py_compile dags/*.py
-
       - name: Run DAG integrity tests
         run: uv run pytest tests/ -v
+
+      # The uv/ruff venv here is Python 3.12, but Airflow itself parses DAGs
+      # with /home/vb1301/airflow/venv (Python 3.10). Code that's valid 3.12
+      # can still fail at DAG-parse time on 3.10 (e.g. datetime.UTC), so
+      # compile against Airflow's actual interpreter, not the dev one.
+      - name: Validate DAG syntax under Airflow's Python (3.10)
+        run: /home/vb1301/airflow/venv/bin/python -m py_compile dags/*.py
 
       # Deploy into a DEDICATED subfolder — the target dir already holds ~20
       # unrelated DAGs that must not be touched. --delete is scoped to that
@@ -35,7 +39,20 @@ jobs:
           mkdir -p /home/vb1301/airflow/dags/forgeai_poc
           rsync -av --delete dags/ /home/vb1301/airflow/dags/forgeai_poc/
 
-      - name: Verify Airflow parses the new DAGs
+      # dags_folder is shared with ~20 pre-existing, unrelated DAGs that
+      # already have their own import errors (see forgeai_poc plan doc,
+      # section 0). `airflow dags list-import-errors` reports on the whole
+      # folder, so scope the pass/fail check to our own subfolder only —
+      # otherwise this step is permanently red for reasons that have
+      # nothing to do with what we just deployed.
+      - name: Verify our DAGs parse cleanly
         run: |
           source /home/vb1301/airflow/venv/bin/activate
-          airflow dags list-import-errors
+          sleep 5   # give the DAG processor a moment to pick up the new files
+          ERRORS=$(airflow dags list-import-errors | grep "forgeai_poc/" || true)
+          if [ -n "$ERRORS" ]; then
+            echo "Import errors in our own DAGs:"
+            echo "$ERRORS"
+            exit 1
+          fi
+          echo "forgeai_poc DAGs parsed cleanly."

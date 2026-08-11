@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
@@ -20,7 +20,7 @@ with DAG(
     dag_id="forgeai_poc_dag",
     default_args=default_args,
     description="POC DAG proving CI/CD deployment + Airflow MCP control",
-    start_date=datetime(2026, 1, 1, tzinfo=UTC),
+    start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     schedule=None,          # manual/MCP-triggered only, no auto schedule during POC
     catchup=False,
     tags=["poc", "mcp", "forgeai"],
