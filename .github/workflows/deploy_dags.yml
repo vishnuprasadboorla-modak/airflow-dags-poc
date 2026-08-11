@@ -18,23 +18,24 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      # ruff is static analysis only — it doesn't need Airflow or any
+      # provider package installed, so the repo's own uv venv is fine here.
       - name: Lint
         run: uv run ruff check dags/
 
-      - name: Run DAG integrity tests
-        run: uv run pytest tests/ -v
-
-      # py_compile only checks SYNTAX — it never executes the module, so it
-      # can't catch runtime errors (bad operator kwargs, undefined names,
-      # etc.). Actually exec the file under Airflow's real interpreter and
-      # real installed providers (e.g. the `yeedu` package), the same way
-      # Airflow's own DAG processor does. Deterministic, no waiting on the
-      # scheduler.
-      - name: Validate DAGs import cleanly under Airflow's Python (3.10)
+      # DAG integrity tests must run under Airflow's OWN venv
+      # (/home/vb1301/airflow/venv, Python 3.10), not the repo's uv venv.
+      # The uv venv only has `apache-airflow` core as a dev dependency — it
+      # does NOT have real provider packages (e.g. `airflow-yeedu-operator`,
+      # installed only in the Airflow venv), so any DAG using a provider
+      # passes under Airflow in production but fails here with
+      # ModuleNotFoundError. Running pytest through Airflow's own
+      # interpreter means dev/test always matches production exactly, by
+      # construction — no dependency list to keep in sync by hand.
+      - name: Run DAG integrity tests under Airflow's own venv
         run: |
-          for f in dags/*.py; do
-            /home/vb1301/airflow/venv/bin/python -c "import importlib.util as u; spec = u.spec_from_file_location('dagcheck', '$f'); m = u.module_from_spec(spec); spec.loader.exec_module(m); print('OK: $f')"
-          done
+          /home/vb1301/airflow/venv/bin/pip install --quiet pytest
+          /home/vb1301/airflow/venv/bin/python -m pytest tests/ -v
 
       # Deploy into a DEDICATED subfolder — the target dir already holds ~20
       # unrelated DAGs that must not be touched. --delete is scoped to that
