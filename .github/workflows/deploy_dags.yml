@@ -1,0 +1,41 @@
+name: Deploy DAGs to Airflow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "dags/**"
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint
+        run: uv run ruff check dags/
+
+      - name: Validate DAG syntax
+        run: uv run python -m py_compile dags/*.py
+
+      - name: Run DAG integrity tests
+        run: uv run pytest tests/ -v
+
+      # Deploy into a DEDICATED subfolder — the target dir already holds ~20
+      # unrelated DAGs that must not be touched. --delete is scoped to that
+      # subfolder only, never to the parent dags/ directory.
+      - name: Sync DAGs (additive, scoped to our own subfolder)
+        run: |
+          mkdir -p /home/vb1301/airflow/dags/forgeai_poc
+          rsync -av --delete dags/ /home/vb1301/airflow/dags/forgeai_poc/
+
+      - name: Verify Airflow parses the new DAGs
+        run: |
+          source /home/vb1301/airflow/venv/bin/activate
+          airflow dags list-import-errors
