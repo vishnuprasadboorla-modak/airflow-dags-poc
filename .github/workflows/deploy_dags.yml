@@ -33,13 +33,7 @@ jobs:
       - name: Validate DAGs import cleanly under Airflow's Python (3.10)
         run: |
           for f in dags/*.py; do
-            /home/vb1301/airflow/venv/bin/python -c "
-import importlib.util
-spec = importlib.util.spec_from_file_location('dagcheck', '$f')
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
-print('OK: $f')
-"
+            /home/vb1301/airflow/venv/bin/python -c "import importlib.util as u; spec = u.spec_from_file_location('dagcheck', '$f'); m = u.module_from_spec(spec); spec.loader.exec_module(m); print('OK: $f')"
           done
 
       # Deploy into a DEDICATED subfolder — the target dir already holds ~20
