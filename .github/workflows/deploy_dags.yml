@@ -24,12 +24,23 @@ jobs:
       - name: Run DAG integrity tests
         run: uv run pytest tests/ -v
 
-      # The uv/ruff venv here is Python 3.12, but Airflow itself parses DAGs
-      # with /home/vb1301/airflow/venv (Python 3.10). Code that's valid 3.12
-      # can still fail at DAG-parse time on 3.10 (e.g. datetime.UTC), so
-      # compile against Airflow's actual interpreter, not the dev one.
-      - name: Validate DAG syntax under Airflow's Python (3.10)
-        run: /home/vb1301/airflow/venv/bin/python -m py_compile dags/*.py
+      # py_compile only checks SYNTAX — it never executes the module, so it
+      # can't catch runtime errors (bad operator kwargs, undefined names,
+      # etc.). Actually exec the file under Airflow's real interpreter and
+      # real installed providers (e.g. the `yeedu` package), the same way
+      # Airflow's own DAG processor does. Deterministic, no waiting on the
+      # scheduler.
+      - name: Validate DAGs import cleanly under Airflow's Python (3.10)
+        run: |
+          for f in dags/*.py; do
+            /home/vb1301/airflow/venv/bin/python -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('dagcheck', '$f')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print('OK: $f')
+"
+          done
 
       # Deploy into a DEDICATED subfolder — the target dir already holds ~20
       # unrelated DAGs that must not be touched. --delete is scoped to that
@@ -39,20 +50,28 @@ jobs:
           mkdir -p /home/vb1301/airflow/dags/forgeai_poc
           rsync -av --delete dags/ /home/vb1301/airflow/dags/forgeai_poc/
 
-      # dags_folder is shared with ~20 pre-existing, unrelated DAGs that
-      # already have their own import errors (see forgeai_poc plan doc,
-      # section 0). `airflow dags list-import-errors` reports on the whole
-      # folder, so scope the pass/fail check to our own subfolder only —
-      # otherwise this step is permanently red for reasons that have
-      # nothing to do with what we just deployed.
-      - name: Verify our DAGs parse cleanly
+      # This is a secondary, best-effort confirmation that the LIVE scheduler
+      # picked up the change — the step above already proved the code itself
+      # is correct, deterministically. `airflow dags list-import-errors`
+      # reflects the DAG processor's own async cadence
+      # (min_file_process_interval / dag_dir_list_interval in airflow.cfg),
+      # not the moment the file landed on disk, so poll with a timeout
+      # instead of a single fixed sleep — a one-shot check can read a STALE
+      # error left over from the previous version of the file. dags_folder
+      # is also shared with ~20 pre-existing unrelated DAGs that have their
+      # own import errors, so scope the check to our own subfolder only.
+      - name: Confirm the live scheduler parsed our DAGs cleanly
         run: |
           source /home/vb1301/airflow/venv/bin/activate
-          sleep 5   # give the DAG processor a moment to pick up the new files
-          ERRORS=$(airflow dags list-import-errors | grep "forgeai_poc/" || true)
-          if [ -n "$ERRORS" ]; then
-            echo "Import errors in our own DAGs:"
-            echo "$ERRORS"
-            exit 1
-          fi
-          echo "forgeai_poc DAGs parsed cleanly."
+          for i in 1 2 3 4 5 6; do
+            ERRORS=$(airflow dags list-import-errors | grep "forgeai_poc/" || true)
+            if [ -z "$ERRORS" ]; then
+              echo "forgeai_poc DAGs parsed cleanly."
+              exit 0
+            fi
+            echo "Attempt $i/6: scheduler hasn't caught up yet, retrying in 5s..."
+            sleep 5
+          done
+          echo "Import errors persisted after 30s:"
+          echo "$ERRORS"
+          exit 1
