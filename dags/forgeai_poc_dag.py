@@ -13,7 +13,7 @@ default_args = {
 
 
 def print_execution_context(**context):
-    print(f"forgeai_poc_dag ran at {context['logical_date']}")
+    print(f"forgeai_poc_dag ran at {context.get('logical_date')}")
 
 
 with DAG(
