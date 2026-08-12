@@ -9,6 +9,20 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
+    env:
+      # This runner (host "yeedu") is a SEPARATE machine from the Airflow
+      # host — Airflow runs in Docker on dev-onprem-004, reached over SSH.
+      ONPREM_HOST: dev-onprem-004.yeedu.io
+      ONPREM_USER: yeedu
+      # /opt/airflow/dags in these containers is a named Docker VOLUME, not
+      # a bind mount — its host-side data dir (/var/lib/docker/volumes/...)
+      # is root-owned, so it can't be rsync'd into directly as user `yeedu`.
+      # We write through the Docker API instead (docker exec / tar), which
+      # is the supported way to touch a volume's contents regardless of
+      # host filesystem permissions.
+      SCHEDULER_CONTAINER: docker_yeedu-airflow-scheduler_1
+      DAG_PROCESSOR_CONTAINER: docker_yeedu-airflow-dag-processor_1
+      REMOTE_DAGS_PATH: /opt/airflow/dags/forgeai_poc
     steps:
       - uses: actions/checkout@v4
 
@@ -23,43 +37,67 @@ jobs:
       - name: Lint
         run: uv run ruff check dags/
 
-      # DAG integrity tests must run under Airflow's OWN venv
-      # (/home/vb1301/airflow/venv, Python 3.10), not the repo's uv venv.
-      # The uv venv only has `apache-airflow` core as a dev dependency — it
-      # does NOT have real provider packages (e.g. `airflow-yeedu-operator`,
-      # installed only in the Airflow venv), so any DAG using a provider
-      # passes under Airflow in production but fails here with
-      # ModuleNotFoundError. Running pytest through Airflow's own
-      # interpreter means dev/test always matches production exactly, by
-      # construction — no dependency list to keep in sync by hand.
-      - name: Run DAG integrity tests under Airflow's own venv
+      # SSH deploy key lives only in this repo's SSH_ONPREM_KEY secret.
+      # Host key is pinned (captured via ssh-keyscan on 2026-08-12) rather
+      # than trust-on-first-use, so a MITM can't silently swap the host.
+      - name: Set up SSH to onprem host
         run: |
-          /home/vb1301/airflow/venv/bin/pip install --quiet pytest
-          /home/vb1301/airflow/venv/bin/python -m pytest tests/ -v
+          set -euo pipefail
+          umask 077
+          echo "${{ secrets.SSH_ONPREM_KEY }}" > "$RUNNER_TEMP/onprem_deploy_key"
+          chmod 600 "$RUNNER_TEMP/onprem_deploy_key"
+          echo "$ONPREM_HOST ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICJbC+LnyAAcsU0INRwDzpJVsl3tzopSkXJAFsm51HiB" > "$RUNNER_TEMP/onprem_known_hosts"
+          echo "SSH_OPTS=-i $RUNNER_TEMP/onprem_deploy_key -o UserKnownHostsFile=$RUNNER_TEMP/onprem_known_hosts -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
 
-      # Deploy into a DEDICATED subfolder — the target dir already holds ~20
-      # unrelated DAGs that must not be touched. --delete is scoped to that
-      # subfolder only, never to the parent dags/ directory.
-      - name: Sync DAGs (additive, scoped to our own subfolder)
+      # DAG integrity tests must run inside the onprem container's OWN
+      # Airflow image/venv, not the repo's uv venv. The uv venv only has
+      # `apache-airflow` core as a dev dependency — it does NOT have real
+      # provider packages (e.g. `airflow-yeedu-operator`, installed only in
+      # the Airflow image), so any DAG using a provider passes under
+      # Airflow in production but fails here with ModuleNotFoundError.
+      # dags/ and tests/ are shipped in as a single tar stream over SSH and
+      # unpacked straight into the container (via `docker exec -i`) so
+      # nothing touches the onprem host's own filesystem.
+      - name: Run DAG integrity tests inside the onprem Airflow container
         run: |
-          mkdir -p /home/vb1301/airflow/dags/forgeai_poc
-          rsync -av --delete dags/ /home/vb1301/airflow/dags/forgeai_poc/
+          set -euo pipefail
+          tar -C . -czf - dags tests \
+            | ssh $SSH_OPTS "$ONPREM_USER@$ONPREM_HOST" \
+              "docker exec -i $SCHEDULER_CONTAINER sh -c 'rm -rf /tmp/forgeai_ci && mkdir -p /tmp/forgeai_ci && tar xzf - -C /tmp/forgeai_ci'"
+          ssh $SSH_OPTS "$ONPREM_USER@$ONPREM_HOST" \
+            "docker exec $SCHEDULER_CONTAINER sh -c 'pip install --quiet pytest && cd /tmp/forgeai_ci && python -m pytest tests/ -v'"
+          ssh $SSH_OPTS "$ONPREM_USER@$ONPREM_HOST" \
+            "docker exec $SCHEDULER_CONTAINER rm -rf /tmp/forgeai_ci" || true
 
-      # This is a secondary, best-effort confirmation that the LIVE scheduler
-      # picked up the change — the step above already proved the code itself
-      # is correct, deterministically. `airflow dags list-import-errors`
-      # reflects the DAG processor's own async cadence
-      # (min_file_process_interval / dag_dir_list_interval in airflow.cfg),
+      # Deploy into a DEDICATED subfolder — the shared dags volume already
+      # holds unrelated DAGs that must not be touched. The rm+mkdir+extract
+      # is scoped to that subfolder only, never to the parent dags/ volume.
+      # Written via the dag-processor container, but since /opt/airflow/dags
+      # is one shared volume mounted into every container, the change is
+      # immediately visible to the scheduler/worker/apiserver too.
+      - name: Deploy DAGs into onprem Airflow (additive, scoped to our own subfolder)
+        run: |
+          set -euo pipefail
+          tar -C dags -czf - . \
+            | ssh $SSH_OPTS "$ONPREM_USER@$ONPREM_HOST" \
+              "docker exec -i $DAG_PROCESSOR_CONTAINER sh -c 'rm -rf $REMOTE_DAGS_PATH && mkdir -p $REMOTE_DAGS_PATH && tar xzf - -C $REMOTE_DAGS_PATH'"
+
+      # This is a secondary, best-effort confirmation that the LIVE
+      # dag-processor picked up the change — the step above already proved
+      # the code itself is correct, deterministically.
+      # `airflow dags list-import-errors` reflects the dag-processor's own
+      # async cadence (min_file_process_interval / dag_dir_list_interval),
       # not the moment the file landed on disk, so poll with a timeout
       # instead of a single fixed sleep — a one-shot check can read a STALE
       # error left over from the previous version of the file. dags_folder
-      # is also shared with ~20 pre-existing unrelated DAGs that have their
-      # own import errors, so scope the check to our own subfolder only.
-      - name: Confirm the live scheduler parsed our DAGs cleanly
+      # is also shared with pre-existing unrelated DAGs that have their own
+      # import errors, so scope the check to our own subfolder only.
+      - name: Confirm the live dag-processor parsed our DAGs cleanly
         run: |
-          source /home/vb1301/airflow/venv/bin/activate
+          set -euo pipefail
+          ssh $SSH_OPTS "$ONPREM_USER@$ONPREM_HOST" DAG_PROCESSOR_CONTAINER="$DAG_PROCESSOR_CONTAINER" bash -s <<'REMOTE_SCRIPT'
           for i in 1 2 3 4 5 6; do
-            ERRORS=$(airflow dags list-import-errors | grep "forgeai_poc/" || true)
+            ERRORS=$(docker exec "$DAG_PROCESSOR_CONTAINER" airflow dags list-import-errors | grep "forgeai_poc/" || true)
             if [ -z "$ERRORS" ]; then
               echo "forgeai_poc DAGs parsed cleanly."
               exit 0
@@ -70,3 +108,4 @@ jobs:
           echo "Import errors persisted after 30s:"
           echo "$ERRORS"
           exit 1
+          REMOTE_SCRIPT
