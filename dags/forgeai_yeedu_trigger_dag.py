@@ -9,7 +9,7 @@ with DAG(
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     schedule=None,
     catchup=False,
-    tags=["poc", "yeedu", "forgeai"],
+    tags=["poc", "yeedu", "forgeai", "test", "easy"],
 ) as dag:
     YeeduOperator(
         task_id="run_notebook",
