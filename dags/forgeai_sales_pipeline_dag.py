@@ -69,7 +69,7 @@ def aggregate_region_totals(**context):
     orders = context["ti"].xcom_pull(key="taxed_orders", task_ids="transform.compute_tax")
     totals = {}
     for order in orders:
-        totals[order["region"]] = totals.get(order["region"], 0) + order["ammount"]
+        totals[order["region"]] = totals.get(order["region"], 0) + order["amount"]
     print(f"Region totals: {totals}")
     context["ti"].xcom_push(key="region_totals", value=totals)
 
