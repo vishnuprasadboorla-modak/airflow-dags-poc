@@ -11,6 +11,9 @@ default_args = {
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=2),
+    "execution_timeout": timedelta(minutes=10),
+    "email_on_failure": False,
+    "email_on_retry": False,
 }
 
 
@@ -81,8 +84,10 @@ with DAG(
     default_args=default_args,
     description="Multi-stage sales pipeline: extract -> validate -> transform -> branch -> aggregate -> report",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    schedule=None,
+    schedule="0 6 * * *",  # daily at 06:00 UTC
     catchup=False,
+    max_active_runs=1,
+    dagrun_timeout=timedelta(minutes=30),
     tags=["poc", "forgeai", "sales", "complex"],
 ) as dag:
     extract = PythonOperator(task_id="extract_orders", python_callable=extract_orders)
