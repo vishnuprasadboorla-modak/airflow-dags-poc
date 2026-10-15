@@ -60,15 +60,15 @@ def step_0_load(**context):
 STEP_COUNT = 1
 
 with DAG(
-    dag_id="forgeai_bulk_1mb_dag_copy",
+    dag_id="forgeai_bulk_1mb_dag",
     default_args=default_args,
-    description="Auto-generated bulk DAG copy (placeholder, see original for full 743-step version) for sizing / parse-load tests",
+    description="Auto-generated bulk DAG (~1MB) for sizing / parse-load tests",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     schedule=None,
     catchup=False,
     max_active_runs=1,
     dagrun_timeout=timedelta(minutes=60),
-    tags=["poc", "forgeai", "bulk", "generated", "1MB", "copy"],
+    tags=["poc", "forgeai", "bulk", "generated", "1MB"],
 ) as dag:
     previous_load = None
     for i in range(STEP_COUNT):
