@@ -11,8 +11,8 @@ jobs:
     runs-on: self-hosted
     env:
       # This runner (host "yeedu") is a SEPARATE machine from the Airflow
-      # host — Airflow runs in Docker on dev-onprem-004, reached over SSH.
-      ONPREM_HOST: dev-onprem-004.yeedu.io
+      # host — Airflow runs in Docker on dev-onprem-009, reached over SSH.
+      ONPREM_HOST: dev-onprem-009.yeedu.io
       ONPREM_USER: yeedu
       # /opt/airflow/dags in these containers is a named Docker VOLUME, not
       # a bind mount — its host-side data dir (/var/lib/docker/volumes/...)
@@ -38,7 +38,7 @@ jobs:
         run: uv run ruff check dags/
 
       # SSH deploy key lives only in this repo's SSH_ONPREM_KEY secret.
-      # Host key is pinned (captured via ssh-keyscan on 2026-08-12) rather
+      # Host key is pinned (dev-onprem-009, captured via ssh-keyscan on 2026-11-05) rather
       # than trust-on-first-use, so a MITM can't silently swap the host.
       - name: Set up SSH to onprem host
         run: |
@@ -46,7 +46,7 @@ jobs:
           umask 077
           echo "${{ secrets.SSH_ONPREM_KEY }}" > "$RUNNER_TEMP/onprem_deploy_key"
           chmod 600 "$RUNNER_TEMP/onprem_deploy_key"
-          echo "$ONPREM_HOST ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICJbC+LnyAAcsU0INRwDzpJVsl3tzopSkXJAFsm51HiB" > "$RUNNER_TEMP/onprem_known_hosts"
+          echo "$ONPREM_HOST ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGSrTWG9SC3tGlCJ4LWrbADM7Kn9kukfqaL++bxB0EKa" > "$RUNNER_TEMP/onprem_known_hosts"
           echo "SSH_OPTS=-i $RUNNER_TEMP/onprem_deploy_key -o UserKnownHostsFile=$RUNNER_TEMP/onprem_known_hosts -o StrictHostKeyChecking=yes" >> "$GITHUB_ENV"
 
       # DAG integrity tests must run inside the onprem container's OWN
